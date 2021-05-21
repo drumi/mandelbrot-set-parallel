@@ -7,8 +7,6 @@
 #include <vector>
 #include <atomic>
 
-#define _MEASURE_
-
 namespace 
 {
     namespace DEFAULT
@@ -27,10 +25,10 @@ namespace
 
         namespace IMAGE
         {
-            std::string const NAME    = "mandlebrot.bmp";
-            int const WIDTH           = 3840;
-            int const HEIGHT          = 2160;
-            double const ZOOM_LEVEL   = 1.0;
+            std::string const NAME = "mandelbrot.bmp";
+            int const WIDTH = 3840;
+            int const HEIGHT = 2160;
+            double const ZOOM_LEVEL = 1.0;
             int const BYTES_PER_PIXEL = 3;
             std::complex<double> const POINT_ORIGIN(0, 0);
         }
@@ -41,13 +39,17 @@ namespace
             int const ITERATIONS = 100;
             int const COUNT = 1;
         }
+
+        double const INFINITY_THRESHOLD = 4.0;
     }
 }
 
 namespace
 {
     uint8_t* rawImage = nullptr;
+#ifdef _DYNAMIC_
     std::atomic<int> chunksReserved = {0};
+#endif
 }
 
 #ifdef _MEASURE_
@@ -59,7 +61,7 @@ namespace
         std::chrono::time_point<std::chrono::high_resolution_clock> start = std::chrono::high_resolution_clock::now();
 
         public:
-        int getElapsedMilliseconds()
+        int getElapsedMilliseconds() const
         {
             std::chrono::time_point<std::chrono::high_resolution_clock> now = std::chrono::high_resolution_clock::now();
             return std::chrono::duration_cast<std::chrono::milliseconds>(now - start).count();
@@ -184,7 +186,7 @@ ThreadParameters generateThreadParameters(ProgramParameters const p)
 {
     ThreadParameters result;
 
-    int const totalPixels     = p.imageHeight * p.imageWidth;
+    int const totalPixels = p.imageHeight * p.imageWidth;
 
     result.imageTotalSize     = totalPixels * DEFAULT::IMAGE::BYTES_PER_PIXEL; 
     result.chunkSize          = (totalPixels / (p.granularity * p.threadsCount)) * DEFAULT::IMAGE::BYTES_PER_PIXEL;
@@ -197,7 +199,7 @@ ThreadParameters generateThreadParameters(ProgramParameters const p)
     result.bottomLeftCoordinates = std::complex<double>(-zoom, -zoom * aspectRatio) + p.pointOrigin;
     result.upperRightCoordinates = std::complex<double>( zoom,  zoom * aspectRatio) + p.pointOrigin;
     
-    result.bytesPerWidth  = p.imageWidth * DEFAULT::IMAGE::BYTES_PER_PIXEL;
+    result.bytesPerWidth = p.imageWidth * DEFAULT::IMAGE::BYTES_PER_PIXEL;
     result.bytesPerHeight = p.imageHeight;
 
     result.dx = (result.upperRightCoordinates.real() - result.bottomLeftCoordinates.real());
@@ -215,9 +217,9 @@ int computeSteps(int const iterations, std::complex<double> const c)
         curr *= curr;
         curr += c;
 
-        double growthIndex = curr.real() * curr.real() + curr.imag() * curr.imag();
+        double const growthIndex = curr.real() * curr.real() + curr.imag() * curr.imag();
 
-        if(growthIndex > 4.0)
+        if(growthIndex > DEFAULT::INFINITY_THRESHOLD)
             return i;
     }
 
@@ -239,7 +241,7 @@ void computePortionOfImage(int const imageStartIndex, int const imageEndIndex, P
 
         std::complex<double> const c(real, imag);
         int const steps = computeSteps(p.iterationsCount, c);
-        uint8_t const color = 255 * steps / (double)p.iterationsCount;
+        uint8_t const color = UINT8_MAX * steps / (double)p.iterationsCount;
 
         rawImage[i  ] = color; // b
         rawImage[i+1] = color; // g
@@ -249,20 +251,24 @@ void computePortionOfImage(int const imageStartIndex, int const imageEndIndex, P
 
 void computeImage(ProgramParameters const p, ThreadParameters const t, int const threadId)
 {
-    #ifdef _MEASURE_
-        Clock threadClock;
-    #endif
+#ifdef _MEASURE_
+    Clock const threadClock;
+#endif
 
-    int currentChunkNumber;
+    int currentChunkNumber = threadId - p.threadsCount;
     int totalChunksCompleted = 0;
 
     // Handle normal chunks
+#ifdef _DYNAMIC_
     while ((currentChunkNumber = chunksReserved++) < t.chunksCount)
+#else
+    while ((currentChunkNumber += p.threadsCount) < t.chunksCount)
+#endif
     {
         ++totalChunksCompleted;
 
-        int const imageStartIndex =  currentChunkNumber * t.chunkSize;
-        int const imageEndIndex   = (currentChunkNumber + 1) * t.chunkSize - 1;
+        int const imageStartIndex = currentChunkNumber * t.chunkSize;
+        int const imageEndIndex = (currentChunkNumber + 1) * t.chunkSize - 1;
 
         computePortionOfImage(imageStartIndex, imageEndIndex, p, t);
     }
@@ -272,35 +278,35 @@ void computeImage(ProgramParameters const p, ThreadParameters const t, int const
     {
         ++totalChunksCompleted;
 
-        int imageStartIndex = currentChunkNumber * t.chunkSize;
-        int imageEndIndex   = t.imageTotalSize - 1;
+        int const imageStartIndex = currentChunkNumber * t.chunkSize;
+        int const imageEndIndex = t.imageTotalSize - 1;
 
         computePortionOfImage(imageStartIndex, imageEndIndex, p, t);
     }
 
-    #ifdef _MEASURE_
-        std::string out = "Thread with id: " + std::to_string(threadId) + " finished " + std::to_string(totalChunksCompleted) +
-                           + " chunks with elapsed time: " + std::to_string(threadClock.getElapsedMilliseconds()) + "ms\n";
-        std::cout << out;
-    #endif
+#ifdef _MEASURE_
+    std::string const out = "Thread with id: " + std::to_string(threadId) + " finished " + std::to_string(totalChunksCompleted) +
+                        + " chunks with elapsed time: " + std::to_string(threadClock.getElapsedMilliseconds()) + "ms\n";
+    std::cout << out;
+#endif
 }
 
-int main(int argc, const char** argv) 
+int main(int const argc, const char** argv) 
 {
-    #ifdef _MEASURE_
-        Clock programClock;
-    #endif
+#ifdef _MEASURE_
+    Clock const programClock;
+#endif
 
-    ProgramParameters programParameters = handleInput(argc, argv);
+    ProgramParameters const programParameters = handleInput(argc, argv);
     printExecutingParameters(programParameters);
     generateEmptyImage(programParameters);
     
-    ThreadParameters threadParameters = generateThreadParameters(programParameters);
+    ThreadParameters const threadParameters = generateThreadParameters(programParameters);
     std::vector<std::thread> workers(programParameters.threadsCount);
 
-    #ifdef _MEASURE_
-        Clock forkClock;
-    #endif
+#ifdef _MEASURE_
+    Clock const forkClock;
+#endif
 
     for(int i = 0; i < programParameters.threadsCount; ++i)
         workers[i] = std::move(std::thread(computeImage, programParameters, threadParameters, i));
@@ -308,25 +314,25 @@ int main(int argc, const char** argv)
     for(int i = 0; i < programParameters.threadsCount; ++i)
         workers[i].join();
 
-    #ifdef _MEASURE_
-        std::cout << "\nTotal time from fork start to join end: " << forkClock.getElapsedMilliseconds() << "ms\n";
-    #endif
+#ifdef _MEASURE_
+    std::cout << "\nTotal time from fork start to join end: " << forkClock.getElapsedMilliseconds() << "ms\n";
+#endif
 
-    #ifdef _MEASURE_
-        Clock imageSaveClock;
-    #endif
+#ifdef _MEASURE_
+    Clock const imageSaveClock;
+#endif
     
     BMPImage::save(programParameters.imageOutputName.c_str(), programParameters.imageHeight, programParameters.imageWidth, rawImage);
 
-    #ifdef _MEASURE_
-        std::cout << "Total time for saving image as bmp: " << imageSaveClock.getElapsedMilliseconds() << "ms\n";
-    #endif
+#ifdef _MEASURE_
+    std::cout << "Total time for saving image as bmp: " << imageSaveClock.getElapsedMilliseconds() << "ms\n";
+#endif
 
     clean();
 
-    #ifdef _MEASURE_
-        std::cout << "Total time for program execution: " << programClock.getElapsedMilliseconds() << "ms\n";
-    #endif
+#ifdef _MEASURE_
+    std::cout << "Total time for program execution: " << programClock.getElapsedMilliseconds() << "ms\n";
+#endif
 
     return 0;
 }

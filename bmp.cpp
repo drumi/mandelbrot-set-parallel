@@ -48,9 +48,9 @@ namespace BMPImage
         uint8_t fileHeader[FILE_HEADER_SIZE] = {0};
         uint8_t infoHeader[INFO_HEADER_SIZE] = {0}; 
 
-        const int widthInBytes = width * BYTES_PER_PIXEL;
-        const int paddingSize = (4 - widthInBytes % 4) % 4;
-        const int stride = widthInBytes + paddingSize;
+        int const widthInBytes = width * BYTES_PER_PIXEL;
+        int const paddingSize = (4 - widthInBytes % 4) % 4;
+        int const stride = widthInBytes + paddingSize;
 
         std::ofstream file(path, std::ios::binary);
 
