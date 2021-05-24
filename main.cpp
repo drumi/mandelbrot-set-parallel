@@ -31,13 +31,15 @@ namespace
             double const ZOOM_LEVEL = 1.0;
             int const BYTES_PER_PIXEL = 3;
             std::complex<double> const POINT_ORIGIN(0, 0);
+
+            uint8_t const TINT_ON_ESCAPE = 32;
         }
 
         namespace THREADS
         {
-            int const GRANULARITY = 1;
-            int const ITERATIONS = 100;
-            int const COUNT = 1;
+            int const GRANULARITY = 16;
+            int const ITERATIONS = 256;
+            int const COUNT = std::thread::hardware_concurrency();
         }
 
         double const INFINITY_THRESHOLD = 4.0;
@@ -212,7 +214,7 @@ int computeSteps(int const iterations, std::complex<double> const c)
 {
     std::complex<double> curr = c;
 
-    for (int i = 0; i < iterations; ++i)
+    for (int i = 1; i <= iterations; ++i)
     {
         curr *= curr;
         curr += c;
@@ -241,9 +243,9 @@ void computePortionOfImage(int const imageStartIndex, int const imageEndIndex, P
 
         std::complex<double> const c(real, imag);
         int const steps = computeSteps(p.iterationsCount, c);
-        uint8_t const color = UINT8_MAX * steps / (double)p.iterationsCount;
+        uint8_t const color = (UINT8_MAX * steps) / p.iterationsCount;
 
-        rawImage[i  ] = color; // b
+        rawImage[i  ] = DEFAULT::IMAGE::TINT_ON_ESCAPE * (steps != 0); // b
         rawImage[i+1] = color; // g
      // rawImage[i+2] = 0;     // r; 0 by default
     }
@@ -302,16 +304,19 @@ int main(int const argc, const char** argv)
     generateEmptyImage(programParameters);
     
     ThreadParameters const threadParameters = generateThreadParameters(programParameters);
-    std::vector<std::thread> workers(programParameters.threadsCount);
+    std::vector<std::thread> workers(programParameters.threadsCount - 1);
 
 #ifdef _MEASURE_
     Clock const forkClock;
 #endif
 
-    for(int i = 0; i < programParameters.threadsCount; ++i)
+    for(int i = 0; i < programParameters.threadsCount - 1; ++i)
         workers[i] = std::move(std::thread(computeImage, programParameters, threadParameters, i));
 
-    for(int i = 0; i < programParameters.threadsCount; ++i)
+    int const mainId = programParameters.threadsCount - 1;
+    computeImage(programParameters, threadParameters, mainId);
+
+    for(int i = 0; i < programParameters.threadsCount - 1; ++i)
         workers[i].join();
 
 #ifdef _MEASURE_
