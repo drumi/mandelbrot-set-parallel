@@ -2,13 +2,20 @@
 
 #include <iostream>
 #include <string>
-#include <complex>
 #include <thread>
 #include <vector>
 #include <atomic>
 
+struct Complex
+{
+    double real;
+    double imag;
+};
+
 namespace 
 {
+    int constexpr N = 64;
+
     namespace DEFAULT
     {
         namespace FLAG
@@ -29,10 +36,7 @@ namespace
             int const WIDTH = 3840;
             int const HEIGHT = 2160;
             double const ZOOM_LEVEL = 1.0;
-            int const BYTES_PER_PIXEL = 3;
-            std::complex<double> const POINT_ORIGIN(0, 0);
-
-            uint8_t const TINT_ON_ESCAPE = 32;
+            Complex const POINT_ORIGIN = {0, 0};
         }
 
         namespace THREADS
@@ -44,11 +48,15 @@ namespace
 
         double const INFINITY_THRESHOLD = 4.0;
     }
+
+    uint8_t palette[3 * 256] = {
+        #include "palette.rpal"
+    };
 }
 
 namespace
 {
-    uint8_t* rawImage = nullptr;
+    uint8_t* paletteArr = nullptr;
 #ifdef _DYNAMIC_
     std::atomic<int> chunksReserved = {0};
 #endif
@@ -72,6 +80,15 @@ namespace
 }
 #endif
 
+#if defined _GRANULARITY_VISUAL_ || defined _GRANULARITY_VISUAL_EXTENDED_
+    auto ___ = [](){
+        palette[3 * 255    ] = 0;
+        palette[3 * 255 + 1] = 255;
+        palette[3 * 255 + 2] = 0;
+        return 0;
+    }();
+#endif
+
 struct ProgramParameters
 {
     int    imageWidth      = DEFAULT::IMAGE::WIDTH;
@@ -82,7 +99,7 @@ struct ProgramParameters
     double zoomLevel       = DEFAULT::IMAGE::ZOOM_LEVEL;
 
     std::string imageOutputName = DEFAULT::IMAGE::NAME;
-    std::complex<double> pointOrigin = DEFAULT::IMAGE::POINT_ORIGIN;
+    Complex pointOrigin = DEFAULT::IMAGE::POINT_ORIGIN;
 };
 
 struct ThreadParameters
@@ -90,15 +107,13 @@ struct ThreadParameters
     int chunkSize;
     int chunksCount;
     int remainderChunkSize;
-    int imageTotalSize;
-    int bytesPerWidth;
-    int bytesPerHeight;
+    int paletteArrSize;
 
     double dx;
     double dy;
 
-    std::complex<double> bottomLeftCoordinates;
-    std::complex<double> upperRightCoordinates;
+    Complex bottomLeftCoordinates;
+    Complex upperRightCoordinates;
 };
 
 void printExecutingParameters(ProgramParameters const p)
@@ -111,7 +126,7 @@ void printExecutingParameters(ProgramParameters const p)
               << DEFAULT::FLAG::THREADS_COUNT << " for thread count.             " << "Executing: " << DEFAULT::FLAG::THREADS_COUNT <<" " << p.threadsCount       << "\n"
               << DEFAULT::FLAG::ZOOM_LEVEL    << " for image zoom.               " << "Executing: " << DEFAULT::FLAG::ZOOM_LEVEL    <<" " << p.zoomLevel          << "\n"
               << DEFAULT::FLAG::ITERATIONS    << " for complex iterations count. " << "Executing: " << DEFAULT::FLAG::ITERATIONS    <<" " << p.iterationsCount    << "\n"
-              << DEFAULT::FLAG::POINT_ORIGIN  << " for image center point.       " << "Executing: " << DEFAULT::FLAG::POINT_ORIGIN  <<" " << p.pointOrigin.real() << " " << p.pointOrigin.imag() << "\n"
+              << DEFAULT::FLAG::POINT_ORIGIN  << " for image center point.       " << "Executing: " << DEFAULT::FLAG::POINT_ORIGIN  <<" " << p.pointOrigin.real << " " << p.pointOrigin.imag << "\n"
               << '\n';
 }
 
@@ -156,7 +171,7 @@ ProgramParameters handleInput(int argc, const char** argv)
         }
         else if(inputFlag == DEFAULT::FLAG::POINT_ORIGIN)
         {
-            result.pointOrigin = std::complex<double>(atof(argv[i+1]), atof(argv[i+2]));
+            result.pointOrigin = { atof(argv[i+1]), atof(argv[i+2]) };
             i += 3;
         }
         else if(inputFlag == DEFAULT::FLAG::ITERATIONS)
@@ -174,84 +189,169 @@ ProgramParameters handleInput(int argc, const char** argv)
     return result;
 }
 
-void generateEmptyImage(ProgramParameters const p)
+void allocateEmptyPaletteArr(ProgramParameters const p)
 {
-    rawImage = new uint8_t[p.imageWidth * p.imageHeight * DEFAULT::IMAGE::BYTES_PER_PIXEL]();
+    paletteArr = new uint8_t[p.imageWidth * p.imageHeight]();
 }
 
 void clean()
 {
-    delete[] rawImage;
+    delete[] paletteArr;
 }
 
 ThreadParameters generateThreadParameters(ProgramParameters const p)
 {
     ThreadParameters result;
 
-    int const totalPixels = p.imageHeight * p.imageWidth;
-
-    result.imageTotalSize     = totalPixels * DEFAULT::IMAGE::BYTES_PER_PIXEL; 
-    result.chunkSize          = (totalPixels / (p.granularity * p.threadsCount)) * DEFAULT::IMAGE::BYTES_PER_PIXEL;
-    result.chunksCount        = result.imageTotalSize / result.chunkSize;
-    result.remainderChunkSize = result.imageTotalSize % result.chunkSize;
+    result.paletteArrSize     = p.imageHeight * p.imageWidth;
+    result.chunkSize          = (result.paletteArrSize  / (p.granularity * p.threadsCount));
+    result.chunksCount        = result.paletteArrSize / result.chunkSize;
+    result.remainderChunkSize = result.paletteArrSize % result.chunkSize;
     
     double const zoom = 2.0 / p.zoomLevel;
     double const aspectRatio = p.imageHeight / (double) p.imageWidth;
 
-    result.bottomLeftCoordinates = std::complex<double>(-zoom, -zoom * aspectRatio) + p.pointOrigin;
-    result.upperRightCoordinates = std::complex<double>( zoom,  zoom * aspectRatio) + p.pointOrigin;
-    
-    result.bytesPerWidth = p.imageWidth * DEFAULT::IMAGE::BYTES_PER_PIXEL;
-    result.bytesPerHeight = p.imageHeight;
+    result.bottomLeftCoordinates = {-zoom + p.pointOrigin.real, -zoom * aspectRatio + p.pointOrigin.imag};
+    result.upperRightCoordinates = { zoom + p.pointOrigin.real,  zoom * aspectRatio + p.pointOrigin.imag};
 
-    result.dx = (result.upperRightCoordinates.real() - result.bottomLeftCoordinates.real());
-    result.dy = (result.upperRightCoordinates.imag() - result.bottomLeftCoordinates.imag());
+    result.dx = (result.upperRightCoordinates.real - result.bottomLeftCoordinates.real);
+    result.dy = (result.upperRightCoordinates.imag - result.bottomLeftCoordinates.imag);
 
     return result;
 }
 
-int computeSteps(int const iterations, std::complex<double> const c)
+void computeStepsVec(int const iterations, double const cR[N], double const cI[N], int res[N])
 {
-    std::complex<double> curr = c;
+    double currR[N];
+    double currI[N];
+    double iSq[N];
+    double rSq[N];
 
-    for (int i = 1; i <= iterations; ++i)
+    uint8_t count = 0;
+
+    for (size_t i = 0; i < N; ++i)
+        currI[i] = cI[i];
+
+    for (size_t i = 0; i < N; ++i)
+        currR[i] = cR[i];
+    
+    for (size_t i = 0; i < N; ++i)
+        iSq[i] = cI[i] * cI[i];
+
+    for (size_t i = 0; i < N; ++i)
+        rSq[i] = cR[i] * cR[i];
+    
+
+    for (int i = 1; i <= iterations && count != N; ++i)
     {
-        curr *= curr;
-        curr += c;
+        for (size_t j = 0; j < N; j++)
+        {
+            if(rSq[j] + iSq[j] > DEFAULT::INFINITY_THRESHOLD && res[j] == 0)
+            {
+                res[j] = i;
+                ++count;
+            }
+        } 
 
-        double const growthIndex = curr.real() * curr.real() + curr.imag() * curr.imag();
+        for (size_t j = 0; j < N; ++j)
+            currI[j] = 2.0 * currI[j] * currR[j] + cI[j];
 
-        if(growthIndex > DEFAULT::INFINITY_THRESHOLD)
-            return i;
+        for (size_t j = 0; j < N; ++j)
+            currR[j] = rSq[j] - iSq[j] + cR[j];
+
+        for (size_t j = 0; j < N; ++j)
+            iSq[j] = currI[j] * currI[j];
+
+        for (size_t j = 0; j < N; ++j)
+            rSq[j] = currR[j] * currR[j];
     }
-
-    return 0;
 }
 
-void computePortionOfImage(int const imageStartIndex, int const imageEndIndex, ProgramParameters const p, ThreadParameters const t)
+void computePortionOfPaletteArr(int const paletteArrStartIndex, int const paletteArrEndIndex, int const imageWidth, int const imageHeight, int const iterationsCount, ThreadParameters const t)
 {
-    for(int i = imageStartIndex; i < imageEndIndex; i += 3)
-    {
-        int const y = i / t.bytesPerWidth;
-        int const x = i % t.bytesPerWidth;
+    double bufI[N];
+    double bufR[N];
 
-        double const realFraction = (x / (double)t.bytesPerWidth);
-        double const imagFraction = (y / (double)t.bytesPerHeight);
+    int k = 0;
 
-        double const real = realFraction * t.dx + t.bottomLeftCoordinates.real();
-        double const imag = imagFraction * t.dy + t.bottomLeftCoordinates.imag();
+    int y = paletteArrStartIndex / imageWidth;
+    int x = paletteArrStartIndex % imageWidth;
 
-        std::complex<double> const c(real, imag);
-        int const steps = computeSteps(p.iterationsCount, c);
-        uint8_t const color = (UINT8_MAX * steps) / p.iterationsCount;
+    double const stepX = (1.0 / imageWidth) * t.dx;
+    double const stepY = (1.0 / imageHeight) * t.dy;
+    
+    for(int i = paletteArrStartIndex; i < paletteArrEndIndex; ++i)
+    { 
+        double const real = x * stepX + t.bottomLeftCoordinates.real;
+        double const imag = y * stepY + t.bottomLeftCoordinates.imag;
 
-        rawImage[i  ] = DEFAULT::IMAGE::TINT_ON_ESCAPE * (steps != 0); // b
-        rawImage[i+1] = color; // g
-     // rawImage[i+2] = 0;     // r; 0 by default
+        ++x;
+
+        if(x == imageWidth)
+        {
+            x = 0;
+            ++y;
+        }
+
+        bufR[k] = real;
+        bufI[k] = imag;
+        ++k;
+
+        if(k == N)
+        {
+            k = 0;
+            int res[N] = {0};
+
+            computeStepsVec(iterationsCount, bufR, bufI, res);
+
+            for (size_t j = 0; j < N; ++j)
+            {
+                uint8_t const paletteIdx = (UINT8_MAX * res[j]) / iterationsCount;
+                paletteArr[i - N + 1 + j] = paletteIdx;
+                if(res[j] == 0)
+                    paletteArr[i - N + 1 + j] = 255; // Wrap around for points that do not diverge
+            }
+            
+#if defined _GRANULARITY_VISUAL_ || defined _GRANULARITY_VISUAL_EXTENDED_
+            for (size_t j = 0; j < N; j++)
+            {
+
+                if(paletteArr[i - N + 1 + j] == 255)
+                    paletteArr[i - N + 1 + j] = 254;
+            }
+#endif
+        }
+        else if(i == (paletteArrEndIndex - 1))
+        {
+            int res[N] = {0};
+            computeStepsVec(iterationsCount, bufR, bufI, res);
+
+            for (size_t j = 0; j < k; ++j)
+            {
+                uint8_t const paletteIdx = (UINT8_MAX * res[j]) / iterationsCount;
+                paletteArr[i - k + 1 + j] = paletteIdx;
+
+                if(res[j] == 0)
+                    paletteArr[i - k + 1 + j] = 255;
+#if defined _GRANULARITY_VISUAL_ || defined _GRANULARITY_VISUAL_EXTENDED_
+                if(paletteIdx == 255)
+                    paletteArr[i - k + 1 + j] = 254;
+#endif
+            }
+        }
     }
+
+#if defined _GRANULARITY_VISUAL_ || defined _GRANULARITY_VISUAL_EXTENDED_
+    paletteArr[paletteArrEndIndex - 1] = 255;
+    #ifdef _GRANULARITY_VISUAL_EXTENDED_
+    for (size_t i = 0; i < 255; i++)
+        paletteArr[paletteArrEndIndex - i] = 255;
+    
+    #endif
+#endif
 }
 
-void computeImage(ProgramParameters const p, ThreadParameters const t, int const threadId)
+void computePaletteArr(ProgramParameters const p, ThreadParameters const t, int const threadId)
 {
 #ifdef _MEASURE_
     Clock const threadClock;
@@ -269,10 +369,10 @@ void computeImage(ProgramParameters const p, ThreadParameters const t, int const
     {
         ++totalChunksCompleted;
 
-        int const imageStartIndex = currentChunkNumber * t.chunkSize;
-        int const imageEndIndex = (currentChunkNumber + 1) * t.chunkSize - 1;
+        int const paletteArrStartIndex = currentChunkNumber * t.chunkSize;
+        int const paletteArrEndIndex = (currentChunkNumber + 1) * t.chunkSize; // Non inclusive
 
-        computePortionOfImage(imageStartIndex, imageEndIndex, p, t);
+        computePortionOfPaletteArr(paletteArrStartIndex, paletteArrEndIndex, p.imageWidth, p.imageHeight, p.iterationsCount, t);
     }
 
     // Handle remainder
@@ -280,10 +380,10 @@ void computeImage(ProgramParameters const p, ThreadParameters const t, int const
     {
         ++totalChunksCompleted;
 
-        int const imageStartIndex = currentChunkNumber * t.chunkSize;
-        int const imageEndIndex = t.imageTotalSize - 1;
+        int const paletteArrStartIndex = currentChunkNumber * t.chunkSize;
+        int const paletteArrEndIndex = t.paletteArrSize;
 
-        computePortionOfImage(imageStartIndex, imageEndIndex, p, t);
+        computePortionOfPaletteArr(paletteArrStartIndex, paletteArrEndIndex, p.imageWidth, p.imageHeight, p.iterationsCount, t);
     }
 
 #ifdef _MEASURE_
@@ -301,7 +401,7 @@ int main(int const argc, const char** argv)
 
     ProgramParameters const programParameters = handleInput(argc, argv);
     printExecutingParameters(programParameters);
-    generateEmptyImage(programParameters);
+    allocateEmptyPaletteArr(programParameters);
     
     ThreadParameters const threadParameters = generateThreadParameters(programParameters);
     std::vector<std::thread> workers(programParameters.threadsCount - 1);
@@ -311,10 +411,10 @@ int main(int const argc, const char** argv)
 #endif
 
     for(int i = 0; i < programParameters.threadsCount - 1; ++i)
-        workers[i] = std::move(std::thread(computeImage, programParameters, threadParameters, i));
+        workers[i] = std::move(std::thread(computePaletteArr, programParameters, threadParameters, i));
 
     int const mainId = programParameters.threadsCount - 1;
-    computeImage(programParameters, threadParameters, mainId);
+    computePaletteArr(programParameters, threadParameters, mainId);
 
     for(int i = 0; i < programParameters.threadsCount - 1; ++i)
         workers[i].join();
@@ -327,7 +427,7 @@ int main(int const argc, const char** argv)
     Clock const imageSaveClock;
 #endif
     
-    BMPImage::save(programParameters.imageOutputName.c_str(), programParameters.imageHeight, programParameters.imageWidth, rawImage);
+     BMPImage::saveWithPalette(programParameters.imageOutputName.c_str(), programParameters.imageHeight, programParameters.imageWidth, paletteArr, palette);
 
 #ifdef _MEASURE_
     std::cout << "Total time for saving image as bmp: " << imageSaveClock.getElapsedMilliseconds() << "ms\n";

@@ -41,31 +41,67 @@ namespace BMPImage
             infoHeader[12] = (uint8_t)(1);
             infoHeader[14] = (uint8_t)(BYTES_PER_PIXEL*8);
         }
-    }
     
-    void save(char const* path, int const height, int const width, uint8_t const* rawImage)
+        void writeFileAndInfoHeader(std::ofstream& file, int const height, int const width)
+        {
+            uint8_t fileHeader[FILE_HEADER_SIZE] = {0};
+            uint8_t infoHeader[INFO_HEADER_SIZE] = {0}; 
+
+            int const widthInBytes = width * BYTES_PER_PIXEL;
+            int const paddingSize = (4 - widthInBytes % 4) % 4;
+            int const stride = widthInBytes + paddingSize;
+
+            createBitmapFileHeader(fileHeader, height, stride);
+            createBitmapInfoHeader(infoHeader, height, width);
+
+            file.write((const char*)fileHeader, sizeof(fileHeader));
+            file.write((const char*)infoHeader, sizeof(infoHeader));
+        }
+    }
+
+    void save(char const* path, int const height, int const width, uint8_t const* imageArrPtr)
     {
-        uint8_t fileHeader[FILE_HEADER_SIZE] = {0};
-        uint8_t infoHeader[INFO_HEADER_SIZE] = {0}; 
+        std::ofstream file(path, std::ios::binary);
+        
+        writeFileAndInfoHeader(file, height, width);
 
         int const widthInBytes = width * BYTES_PER_PIXEL;
         int const paddingSize = (4 - widthInBytes % 4) % 4;
-        int const stride = widthInBytes + paddingSize;
-
-        std::ofstream file(path, std::ios::binary);
-
-        createBitmapFileHeader(fileHeader, height, stride);
-        createBitmapInfoHeader(infoHeader, height, width);
-
-        file.write((const char*)fileHeader, sizeof(fileHeader));
-        file.write((const char*)infoHeader, sizeof(infoHeader));
 
         for (int i = 0; i < height; ++i) 
         {
-            file.write((const char*)(rawImage + (i * widthInBytes)), widthInBytes);
+            file.write((const char*)(imageArrPtr + (i * widthInBytes)), widthInBytes);
             file.write((const char*)NULL, paddingSize);
         }
 
+        file.close();
+    }
+
+    void saveWithPalette(char const* path, int const height, int const width, uint8_t const* paletteArrPtr, uint8_t const palette[BYTES_PER_PIXEL * 256])
+    {
+        int const imageWidthInBytes = width * BYTES_PER_PIXEL;
+        int const paddingSize = (4 - imageWidthInBytes % 4) % 4;
+
+        std::ofstream file(path, std::ios::binary);
+        uint8_t* buf = new uint8_t[imageWidthInBytes];
+        
+        writeFileAndInfoHeader(file, height, width);
+
+        for (size_t i = 0; i < height; ++i)
+        {
+            for (int j = 0; j < width; ++j) 
+            {
+                buf[j * BYTES_PER_PIXEL    ] = palette[paletteArrPtr[j + i * width] * BYTES_PER_PIXEL    ];
+                buf[j * BYTES_PER_PIXEL + 1] = palette[paletteArrPtr[j + i * width] * BYTES_PER_PIXEL + 1];
+                buf[j * BYTES_PER_PIXEL + 2] = palette[paletteArrPtr[j + i * width] * BYTES_PER_PIXEL + 2];
+
+            }
+
+            file.write((const char*)buf, imageWidthInBytes);
+            file.write((const char*)NULL, paddingSize);
+        }
+
+        delete[] buf;
         file.close();
     }
 }

@@ -1,4 +1,4 @@
-echo "Available build macros _MEASURE_, _DYNAMIC_"
+echo "Available build macros _MEASURE_, _DYNAMIC_, _GRANULARITY_VISUAL_, _GRANULARITY_VISUAL_EXTENDED_"
 
 s=""
 while [ ! -z $1 ]
